@@ -24,9 +24,12 @@ MODELS = {
     "nano": "mlx-community/MOSS-TTS-Nano-100M",
     "dialogue": "OpenMOSS-Team/MOSS-TTSD-v1.0",
     "sfx": "OpenMOSS-Team/MOSS-SoundEffect",
+    "voicegen": "OpenMOSS-Team/MOSS-VoiceGenerator",
 }
 # Model-card recommended decoding for MOSS-SoundEffect.
 SFX_SAMPLING = dict(audio_temperature=1.5, audio_top_p=0.6, audio_top_k=50, audio_repetition_penalty=1.2)
+# Model-card recommended decoding for MOSS-VoiceGenerator.
+VOICEGEN_SAMPLING = dict(audio_temperature=1.5, audio_top_p=0.6, audio_top_k=50, audio_repetition_penalty=1.1)
 
 # Capabilities and measured numbers (../moss_tests/results.jsonl) shown in the UI.
 MODEL_INFO = {
@@ -45,18 +48,22 @@ MODEL_INFO = {
     "sfx": dict(label="MOSS-SoundEffect", short="Sound effects and ambience", sample_rate=24000, peak_gb=25.0,
                 rtf=0.5, streaming=False, cloning=False, needs_voice=False, continuation=False, instruction=False,
                 workflows=["sfx"]),
+    # Same MossTTSDelay architecture on a 1.7B backbone, trained to build a voice from a description.
+    "voicegen": dict(label="MOSS-VoiceGenerator (1.7B)", short="Voice from a description", sample_rate=24000,
+                     peak_gb=11.9, rtf=0.3, streaming=False, cloning=False, needs_voice=False, continuation=False,
+                     instruction=True, workflows=["design"]),
 }
 
 # Which models each workflow may use (first is the default).
 WORKFLOW_MODELS = {
     "tts": ["tts", "fast", "nano"],
-    "design": ["tts"],
+    "design": ["voicegen", "tts"],
     "clone": ["tts", "fast", "nano"],
     "dialogue": ["dialogue"],
     "sfx": ["sfx"],
 }
 
-DEFAULT_MAX_SECONDS = {"tts": 120, "fast": 120, "nano": 30, "dialogue": 600, "sfx": 60}
+DEFAULT_MAX_SECONDS = {"tts": 120, "fast": 120, "nano": 30, "dialogue": 600, "sfx": 60, "voicegen": 60}
 
 # Tiny throwaway generations that compile kernels and initialize the audio tokenizer.
 WARMUP_TEXT = "Hello there."
@@ -170,8 +177,9 @@ def speech_items(model_key: str, params: dict, voice: Voice | None) -> list[Item
     experimental = {k: _str(params, k) for k in ("quality", "sound_event", "scene")}
 
     items = []
+    base = dict(VOICEGEN_SAMPLING) if model_key == "voicegen" else {}
     for t in items_text:
-        kw = dict(text=t, **sampling(params))
+        kw = {**base, "text": t, **sampling(params)}
         if model_key == "nano":
             kw["max_tokens"] = round(max_seconds * FRAMES_PER_SECOND)
             if voice.transcript:
@@ -285,6 +293,9 @@ def warmup_kwargs(model_key: str, ref_audio: str | None = None) -> dict:
         return dict(text="[S1] Hi. [S2] Hello.", max_tokens=WARMUP_MAX_TOKENS)
     if model_key == "nano":
         return dict(text=WARMUP_TEXT, ref_audio=ref_audio, max_tokens=WARMUP_MAX_TOKENS)
+    if model_key == "voicegen":
+        return dict(text=WARMUP_TEXT, instruction="A calm adult voice.", max_tokens=WARMUP_MAX_TOKENS,
+                    **VOICEGEN_SAMPLING)
     kw = dict(text=WARMUP_TEXT, max_tokens=WARMUP_MAX_TOKENS)
     if model_key == "fast":
         kw["language"] = "English"

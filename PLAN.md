@@ -116,7 +116,7 @@ Each workflow is a view that compiles its form into one `POST /api/jobs`. The ta
 - **Live mode:** with `fast`, a "Play while generating" switch uses the PCM stream.
 
 ### 3.2 Voice design
-MOSS has no separate voice-design model in this mlx-audio. Voice design here means **v1.5 with an `instruction` and no reference** (tested: `instruction_whisper`).
+Voice design uses **`OpenMOSS-Team/MOSS-VoiceGenerator`** (1.7B, same MossTTSDelay architecture, loads with mlx-audio's `moss_tts`, about 12 GB peak) with its model-card sampling (temp 1.5, top_p 0.6, top_k 50, rep 1.1). It replaced the original v1.5-with-`instruction` approach, which barely followed descriptions. v1.5 is still selectable for comparison.
 - **Inputs:** voice description, an audition line, and a variation count (default 4).
 - **Flow:** generate N takes, compare them in `<moss-take-list>`, then **Save as voice**. That writes the take as a reference WAV, its text as the transcript, and the description into the voice library. From then on the voice is used through cloning, which gives a consistent identity. You've confirmed this approach.
 - **Calls:** `text`, `instruction`, optional `language`, seeds `seed+i`.

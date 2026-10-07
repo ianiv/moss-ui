@@ -50,8 +50,8 @@ class MossDesignView extends SpeechView {
           <input id="language" name="language" list="languages" placeholder="auto" autocomplete="off">
           <datalist id="languages">${LANGUAGES.map((l) => html`<option value="${l}"></option>`)}</datalist>
         </div>
-        <moss-gen-controls name="controls" workflow="design" models="tts" model="tts" hide-model variations="4" show-temperature></moss-gen-controls>
-        <p class="model-note">Uses the <strong>tts</strong> model (the only one that follows instructions). Four variations give you a real choice; each uses seed, seed+1, …</p>
+        <moss-gen-controls name="controls" workflow="design" models="voicegen,tts" model="voicegen" variations="4" show-temperature></moss-gen-controls>
+        <p class="model-note"><strong>voicegen</strong> (MOSS-VoiceGenerator) is trained to build a voice from your description and is the one to use. <strong>tts</strong> treats the description as a light hint. Four variations give you a real choice; each uses seed, seed+1, …</p>
       `,
     });
   }
@@ -89,7 +89,7 @@ class MossDesignView extends SpeechView {
       ...pick({ language: this.language.value.trim() }, ["language"]),
       ...pick(c, ["temperature", "max_seconds"]),
     };
-    return { workflow: "design", model: "tts", params, variations: c.variations, seed: c.seed ?? null };
+    return { workflow: "design", model: this.controls.model || "voicegen", params, variations: c.variations, seed: c.seed ?? null };
   }
 
   fillFromRecipe(req, p) {
