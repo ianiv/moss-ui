@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Starts the MOSS UI server with the Python from the mlx-audio uv tool (where mlx_audio is installed).
+# Usage: ./moss-ui [--port 8765] [--data-dir ./data] [--warm-model tts|fast|nano|dialogue|sfx|none]
+#                  [--idle-unload-minutes 15]
+# Always binds to 127.0.0.1. Open http://127.0.0.1:<port>/ in a browser.
+set -euo pipefail
+GEN=$(command -v mlx_audio.tts.generate) || { echo "mlx-audio not found: uv tool install mlx-audio" >&2; exit 1; }
+PY=$(head -1 "$GEN" | sed 's/^#!//')
+export HF_HUB_DISABLE_PROGRESS_BARS=1
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$PY" "$HERE/backend/server.py" "$@" 2> >(grep --line-buffered -v -E "instantiate a model of type|Warning:|warnings.warn" >&2)
