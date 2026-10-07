@@ -33,7 +33,7 @@ const styles = css`
   li { display: flex; align-items: stretch; gap: 2px; border-radius: var(--radius-sm); }
   li.cur { background: var(--accent-soft); }
   .pick {
-    flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; justify-items: start; text-align: left; border: 0; background: transparent;
+    flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; gap: 2px; justify-items: start; text-align: left; border: 0; background: transparent;
     padding: 6px 8px; font-weight: 400; white-space: normal;
   }
   .pick:hover:not([aria-disabled=true]) { background: var(--surface-2); }
