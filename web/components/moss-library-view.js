@@ -10,8 +10,10 @@
 //   Speech"), client-side filter, "New voice" dialog with <moss-voice-recorder>. Cards are keyed by voice id
 //   and updated in place on store "voices" events, so unsaved transcript edits survive.
 //
-// Both tabs: a checkbox on every row/card, "Select all" (shown items) in the toolbar, shift-click for ranges, and a
-//   selection bar with "Delete N" (one confirm, then the existing per-item DELETE calls) and "Clear". Esc clears.
+// Both tabs: a "Select" toolbar button enters select mode without selecting anything. In select mode every row/card
+//   shows a checkbox (clicking the row's background also toggles it), shift-click selects ranges, and a selection bar
+//   offers "Select all" (shown items), "Delete N" (one confirm, then the existing per-item DELETE calls) and "Done".
+//   Esc exits select mode.
 //
 // View contract: activated() (reads the tab from the hash, refreshes stale data). generate() is not
 // applicable here.
@@ -58,6 +60,9 @@ const styles = css`
   .selbar button.del { background: var(--danger); border-color: var(--danger); color: #fff; }
   .selbar button.del:hover:not(:disabled) { filter: brightness(1.08); background: var(--danger); }
   input.sel { width: 16px; height: 16px; margin: 0; flex: none; cursor: pointer; }
+  section:not(.selecting) :is(li.take, .vcard) input.sel { display: none; }
+  section.selecting :is(li.take, .vcard) { cursor: pointer; }
+  button[data-act=select][aria-pressed=true] { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
   .lrow { display: flex; gap: var(--sp-2); align-items: center; min-width: 0; }
   li.take.selected, .vcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   ul.takes { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
@@ -141,13 +146,14 @@ class MossLibraryView extends MossElement {
           </select>
           <button type="button" id="starred" aria-pressed="false">${icon("star", 14)} Starred only</button>
           <button type="button" class="ghost icon" id="reload" aria-label="Refresh history" title="Refresh">${icon("refresh")}</button>
-          <label class="selall"><input type="checkbox" class="sel" id="h-all"> Select all</label>
+          <button type="button" class="small" data-act="select" id="h-select" aria-pressed="false">${icon("check", 14)} Select</button>
           <span class="count small faint" aria-live="polite"></span>
         </div>
         <div class="selbar" id="h-selbar" hidden>
           <span class="n" aria-live="polite"></span>
-          <button type="button" class="small" data-sel="clear">Clear</button>
+          <label class="selall"><input type="checkbox" class="sel" id="h-all"> Select all</label>
           <button type="button" class="small del" data-sel="delete">${icon("trash", 14)} <span>Delete</span></button>
+          <button type="button" class="small" data-sel="done">Done</button>
         </div>
         <div class="h-error" hidden></div>
         <div class="h-loading loading" hidden><span class="spinner"></span> Loading history…</div>
@@ -160,13 +166,14 @@ class MossLibraryView extends MossElement {
         <div class="toolbar">
           <button type="button" class="primary" id="new-voice">${icon("plus", 14)} New voice</button>
           <label class="search"><span class="sr-only">Filter voices</span>${icon("search")}<input type="search" id="vq" placeholder="Filter voices…" autocomplete="off"></label>
-          <label class="selall"><input type="checkbox" class="sel" id="v-all"> Select all</label>
+          <button type="button" class="small" data-act="select" id="v-select" aria-pressed="false">${icon("check", 14)} Select</button>
           <span class="count v-count small faint" aria-live="polite"></span>
         </div>
         <div class="selbar" id="v-selbar" hidden>
           <span class="n" aria-live="polite"></span>
-          <button type="button" class="small" data-sel="clear">Clear</button>
+          <label class="selall"><input type="checkbox" class="sel" id="v-all"> Select all</label>
           <button type="button" class="small del" data-sel="delete">${icon("trash", 14)} <span>Delete</span></button>
+          <button type="button" class="small" data-sel="done">Done</button>
         </div>
         <div class="v-empty empty" hidden></div>
         <div class="grid" aria-label="Voices"></div>
@@ -208,6 +215,7 @@ class MossLibraryView extends MossElement {
     this.shown = PAGE;
     this.cards = new Map(); // voice id -> card element
     this.sel = { history: new Selection(), voices: new Selection() };
+    this.selecting = { history: false, voices: false };
     this.historyStale = true;
     this.histSeq = 0;
     this.io = new IntersectionObserver((entries) => this.onVisible(entries), { rootMargin: "300px 0px" });
@@ -248,14 +256,15 @@ class MossLibraryView extends MossElement {
     this.$(".grid").addEventListener("click", (e) => this.onSelectClick(e, "voices"));
     this.$("#h-all").addEventListener("change", (e) => this.selectAll("history", e.target.checked));
     this.$("#v-all").addEventListener("change", (e) => this.selectAll("voices", e.target.checked));
+    this.$("#h-select").addEventListener("click", () => this.setSelecting("history", !this.selecting.history));
+    this.$("#v-select").addEventListener("click", () => this.setSelecting("voices", !this.selecting.voices));
     this.$("#h-selbar").addEventListener("click", (e) => this.onSelbar(e, "history"));
     this.$("#v-selbar").addEventListener("click", (e) => this.onSelbar(e, "voices"));
     this.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape" || !this.sel[this.tab].size) return;
+      if (e.key !== "Escape" || !this.selecting[this.tab]) return;
       if (this.shadowRoot.querySelector("dialog[open]")) return;
       e.preventDefault();
-      this.sel[this.tab].clear();
-      this.syncSelection(this.tab);
+      this.setSelecting(this.tab, false);
     });
     this.$(".h-empty").addEventListener("click", (e) => {
       if (e.target.closest("#clear-filters")) this.clearFilters();
@@ -815,11 +824,26 @@ class MossLibraryView extends MossElement {
     return (tab === "history" ? this.rows : this.cards).get(id);
   }
 
+  setSelecting(tab, on) {
+    this.selecting[tab] = on;
+    if (!on) this.sel[tab].clear();
+    this.$(`#panel-${tab}`).classList.toggle("selecting", on);
+    const b = this.$(tab === "history" ? "#h-select" : "#v-select");
+    b.setAttribute("aria-pressed", String(on));
+    this.syncSelection(tab);
+  }
+
+  /** In select mode: the checkbox, or a click on the row/card background (not its buttons, player or fields). */
   onSelectClick(e, tab) {
-    const box = e.target.closest("input.sel");
-    if (!box) return;
-    const el = box.closest(tab === "history" ? "li.take" : ".vcard");
+    if (!this.selecting[tab]) return;
+    const el = e.target.closest(tab === "history" ? "li.take" : ".vcard");
     if (!el) return;
+    let box = e.target.closest("input.sel");
+    if (!box) {
+      if (e.target.closest("button, a, input, textarea, select, label, moss-waveform-player")) return;
+      box = el.querySelector("input.sel");
+      box.checked = !box.checked;
+    }
     this.sel[tab].toggle(el.dataset.id, box.checked, this.shownIds(tab), e.shiftKey);
     this.syncSelection(tab);
   }
@@ -846,18 +870,19 @@ class MossLibraryView extends MossElement {
     all.indeterminate = picked > 0 && picked < shown.length;
     all.disabled = !shown.length;
     const bar = this.$(tab === "history" ? "#h-selbar" : "#v-selbar");
-    bar.hidden = !sel.size;
+    bar.hidden = !this.selecting[tab];
     const noun = tab === "history" ? "take" : "voice";
     bar.querySelector(".n").textContent = `${sel.size} ${noun}${sel.size === 1 ? "" : "s"} selected`;
-    bar.querySelector(".del span").textContent = `Delete ${sel.size}`;
+    bar.querySelector(".n").textContent = sel.size ? bar.querySelector(".n").textContent : `Select ${noun}s to delete`;
+    bar.querySelector(".del span").textContent = sel.size ? `Delete ${sel.size}` : "Delete";
+    bar.querySelector(".del").disabled = !sel.size;
   }
 
   async onSelbar(e, tab) {
     const b = e.target.closest("button[data-sel]");
     if (!b) return;
-    if (b.dataset.sel === "clear") {
-      this.sel[tab].clear();
-      this.syncSelection(tab);
+    if (b.dataset.sel === "done") {
+      this.setSelecting(tab, false);
       return;
     }
     const ids = [...this.sel[tab]];
