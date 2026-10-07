@@ -332,6 +332,16 @@ class Take:
         return len(self.audio) / self.sample_rate if self.sample_rate else 0.0
 
 
+def to_mono(a):
+    """Downmix to 1-D. The fast model's MOSS-Audio-Tokenizer-v2 decodes stereo as (samples, 2); flattening that
+    interleaves the channels into a mono track twice as long, which plays at half speed."""
+    if a.ndim == 2:
+        if a.shape[0] <= 8 and a.shape[0] < a.shape[1]:  # (channels, samples)
+            a = a.T
+        a = a.mean(axis=1)
+    return a.reshape(-1)
+
+
 def render(model, kwargs: dict, *, seed: int | None = None, stream: bool = False,
            on_chunk: Callable[["object", int, float], None] | None = None,
            should_cancel: Callable[[], bool] | None = None) -> Take | None:
@@ -348,7 +358,7 @@ def render(model, kwargs: dict, *, seed: int | None = None, stream: bool = False
     for r in model.generate(stream=stream, **kwargs):
         if first is None:
             first = time.perf_counter() - t0
-        a = np.asarray(r.audio, dtype=np.float32).reshape(-1)
+        a = to_mono(np.asarray(r.audio, dtype=np.float32))
         chunks.append(a)
         sr = r.sample_rate
         total += len(a)
