@@ -182,7 +182,7 @@ class MossApp extends MossElement {
         return;
       }
     }
-    if (!typing && !mod && e.key === "?") {
+    if (!typing && !mod && (e.key === "?" || (e.shiftKey && e.code === "Slash"))) {
       e.preventDefault();
       this.$("#keys").showModal();
     }

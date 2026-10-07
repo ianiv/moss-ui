@@ -50,6 +50,7 @@ const styles = css`
   .group { display: grid; gap: var(--sp-2); }
   .ghead { display: flex; align-items: baseline; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-3); padding: 0 2px; min-width: 0; }
   .ghead .gl { color: var(--text-2); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+  .ghead > :not(.gl, .line) { white-space: nowrap; flex: none; }
   .ghead .line { flex: 1 1 24px; height: 1px; background: var(--border); align-self: center; }
   .grid { display: grid; gap: var(--sp-2); grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
 
