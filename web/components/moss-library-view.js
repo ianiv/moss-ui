@@ -10,6 +10,9 @@
 //   Speech"), client-side filter, "New voice" dialog with <moss-voice-recorder>. Cards are keyed by voice id
 //   and updated in place on store "voices" events, so unsaved transcript edits survive.
 //
+// Both tabs: a checkbox on every row/card, "Select all" (shown items) in the toolbar, shift-click for ranges, and a
+//   selection bar with "Delete N" (one confirm, then the existing per-item DELETE calls) and "Clear". Esc clears.
+//
 // View contract: activated() (reads the tab from the hash, refreshes stale data). generate() is not
 // applicable here.
 import { MossElement, define } from "../lib/element.js";
@@ -45,6 +48,18 @@ const styles = css`
   .toolbar .search input { padding-left: 32px; }
   .toolbar select { width: auto; }
   .count { margin-left: auto; }
+  .selall { display: inline-flex; gap: 6px; align-items: center; font-size: var(--fs-sm); color: var(--text-2); cursor: pointer; white-space: nowrap; }
+  .selbar {
+    display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin: calc(-1 * var(--sp-1)) 0 var(--sp-3);
+    padding: var(--sp-2) var(--sp-3); border-radius: var(--radius); background: var(--accent-soft, var(--surface-2));
+    font-size: var(--fs-sm);
+  }
+  .selbar .n { font-weight: 600; margin-right: auto; }
+  .selbar button.del { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .selbar button.del:hover:not(:disabled) { filter: brightness(1.08); background: var(--danger); }
+  input.sel { width: 16px; height: 16px; margin: 0; flex: none; cursor: pointer; }
+  .lrow { display: flex; gap: var(--sp-2); align-items: center; min-width: 0; }
+  li.take.selected, .vcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   ul.takes { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
   li.take {
     display: grid; gap: 6px var(--sp-3); padding: var(--sp-2) var(--sp-3); background: var(--surface);
@@ -79,6 +94,27 @@ const styles = css`
 
 const trimmed = (s) => String(s || "").trim();
 
+/** A set of selected ids with a shift-click anchor. */
+class Selection extends Set {
+  anchor = null;
+
+  /** Check or uncheck one id; with shift, apply the same state to the range from the last clicked id. */
+  toggle(id, on, order, shift) {
+    const a = shift && this.anchor != null ? order.indexOf(this.anchor) : -1;
+    const b = order.indexOf(id);
+    const range = a >= 0 && b >= 0 ? order.slice(Math.min(a, b), Math.max(a, b) + 1) : [id];
+    for (const x of range) on ? this.add(x) : this.delete(x);
+    this.anchor = id;
+  }
+
+  /** Drop ids that no longer exist. */
+  keep(ids) {
+    const valid = new Set(ids);
+    for (const id of this) if (!valid.has(id)) this.delete(id);
+    if (this.anchor != null && !valid.has(this.anchor)) this.anchor = null;
+  }
+}
+
 class MossLibraryView extends MossElement {
   static styles = [viewLayout, styles];
 
@@ -105,7 +141,13 @@ class MossLibraryView extends MossElement {
           </select>
           <button type="button" id="starred" aria-pressed="false">${icon("star", 14)} Starred only</button>
           <button type="button" class="ghost icon" id="reload" aria-label="Refresh history" title="Refresh">${icon("refresh")}</button>
+          <label class="selall"><input type="checkbox" class="sel" id="h-all"> Select all</label>
           <span class="count small faint" aria-live="polite"></span>
+        </div>
+        <div class="selbar" id="h-selbar" hidden>
+          <span class="n" aria-live="polite"></span>
+          <button type="button" class="small" data-sel="clear">Clear</button>
+          <button type="button" class="small del" data-sel="delete">${icon("trash", 14)} <span>Delete</span></button>
         </div>
         <div class="h-error" hidden></div>
         <div class="h-loading loading" hidden><span class="spinner"></span> Loading history…</div>
@@ -118,7 +160,13 @@ class MossLibraryView extends MossElement {
         <div class="toolbar">
           <button type="button" class="primary" id="new-voice">${icon("plus", 14)} New voice</button>
           <label class="search"><span class="sr-only">Filter voices</span>${icon("search")}<input type="search" id="vq" placeholder="Filter voices…" autocomplete="off"></label>
+          <label class="selall"><input type="checkbox" class="sel" id="v-all"> Select all</label>
           <span class="count v-count small faint" aria-live="polite"></span>
+        </div>
+        <div class="selbar" id="v-selbar" hidden>
+          <span class="n" aria-live="polite"></span>
+          <button type="button" class="small" data-sel="clear">Clear</button>
+          <button type="button" class="small del" data-sel="delete">${icon("trash", 14)} <span>Delete</span></button>
         </div>
         <div class="v-empty empty" hidden></div>
         <div class="grid" aria-label="Voices"></div>
@@ -159,6 +207,7 @@ class MossLibraryView extends MossElement {
     this.rows = new Map(); // take id -> <li>
     this.shown = PAGE;
     this.cards = new Map(); // voice id -> card element
+    this.sel = { history: new Selection(), voices: new Selection() };
     this.historyStale = true;
     this.histSeq = 0;
     this.io = new IntersectionObserver((entries) => this.onVisible(entries), { rootMargin: "300px 0px" });
@@ -195,6 +244,19 @@ class MossLibraryView extends MossElement {
       this.renderTakes();
     });
     this.$("ul.takes").addEventListener("click", (e) => this.onTakeAction(e));
+    this.$("ul.takes").addEventListener("click", (e) => this.onSelectClick(e, "history"));
+    this.$(".grid").addEventListener("click", (e) => this.onSelectClick(e, "voices"));
+    this.$("#h-all").addEventListener("change", (e) => this.selectAll("history", e.target.checked));
+    this.$("#v-all").addEventListener("change", (e) => this.selectAll("voices", e.target.checked));
+    this.$("#h-selbar").addEventListener("click", (e) => this.onSelbar(e, "history"));
+    this.$("#v-selbar").addEventListener("click", (e) => this.onSelbar(e, "voices"));
+    this.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || !this.sel[this.tab].size) return;
+      if (this.shadowRoot.querySelector("dialog[open]")) return;
+      e.preventDefault();
+      this.sel[this.tab].clear();
+      this.syncSelection(this.tab);
+    });
     this.$(".h-empty").addEventListener("click", (e) => {
       if (e.target.closest("#clear-filters")) this.clearFilters();
     });
@@ -366,6 +428,9 @@ class MossLibraryView extends MossElement {
       prev = li;
     }
 
+    this.sel.history.keep(this.takes.map((t) => t.id));
+    this.syncSelection("history");
+
     const n = this.takes.length;
     const f = this.filters;
     const filtered = !!(f.workflow || f.q || f.starred);
@@ -388,7 +453,7 @@ class MossLibraryView extends MossElement {
     li.dataset.id = take.id;
     li.innerHTML = String(html`
       <div class="info">
-        <div class="label"></div>
+        <div class="lrow"><input type="checkbox" class="sel" aria-label="Select take"><div class="label"></div></div>
         <div class="meta"></div>
         <div class="note" hidden></div>
       </div>
@@ -410,6 +475,7 @@ class MossLibraryView extends MossElement {
     const lab = li.querySelector(".label");
     lab.textContent = label;
     lab.title = label;
+    li.querySelector("input.sel").setAttribute("aria-label", `Select "${label}"`);
     const rtf = Number.isFinite(+take.rtf) ? `RTF ${(+take.rtf).toFixed(2)}` : "";
     li.querySelector(".meta").innerHTML = String(html`
       <span class="badge accent">${WF_LABEL[take.workflow] || take.workflow}</span>
@@ -493,6 +559,7 @@ class MossLibraryView extends MossElement {
       if (!ok) return;
       try {
         await api.deleteTake(take.id);
+        this.sel.history.delete(take.id);
         this.takes = this.takes.filter((t) => t.id !== take.id);
         this.renderTakes();
         toast("Take deleted", "ok");
@@ -536,6 +603,9 @@ class MossLibraryView extends MossElement {
       if (want !== card) grid.insertBefore(card, want);
       prev = card;
     }
+    this.sel.voices.keep(all.map((v) => v.id));
+    this._voiceOrder = list.map((v) => v.id);
+    this.syncSelection("voices");
     this.$(".v-count").textContent = all.length ? (q ? `${list.length} of ${all.length} voices` : `${all.length} voice${all.length === 1 ? "" : "s"}`) : "";
 
     const empty = this.$(".v-empty");
@@ -564,6 +634,7 @@ class MossLibraryView extends MossElement {
     const tid = `tr-${v.id}`;
     card.innerHTML = String(html`
       <div class="row between">
+        <input type="checkbox" class="sel" aria-label="Select voice">
         <h4 class="grow name"></h4>
         <span class="row badges"></span>
       </div>
@@ -597,6 +668,7 @@ class MossLibraryView extends MossElement {
     card.querySelector(".name").textContent = name;
     card.querySelector(".name").title = v.id !== name ? `${name} (${v.id})` : name;
     card.setAttribute("aria-label", `Voice ${name}`);
+    card.querySelector("input.sel").setAttribute("aria-label", `Select voice "${name}"`);
     card.querySelector(".badges").innerHTML = String(html`
       <span class="badge accent">${SOURCE_LABEL[v.source] || v.source || "voice"}</span>
       ${v.duration_s ? html`<span class="badge">${fmtSeconds(v.duration_s)}</span>` : ""}
@@ -701,6 +773,7 @@ class MossLibraryView extends MossElement {
       if (!ok) return;
       try {
         await api.deleteVoice(v.id);
+        this.sel.voices.delete(v.id);
         toast(`Deleted voice "${v.name || v.id}"`, "ok");
         store.refreshVoices().catch(() => {});
       } catch (err) {
@@ -729,6 +802,93 @@ class MossLibraryView extends MossElement {
       err.textContent = e.message;
       err.hidden = false;
     }
+  }
+
+  // ----- multi-select -----
+
+  /** Ids of the items currently shown in a tab, in display order (what "Select all" and ranges cover). */
+  shownIds(tab) {
+    return tab === "history" ? this.takes.slice(0, this.shown).map((t) => t.id) : this._voiceOrder || [];
+  }
+
+  itemEl(tab, id) {
+    return (tab === "history" ? this.rows : this.cards).get(id);
+  }
+
+  onSelectClick(e, tab) {
+    const box = e.target.closest("input.sel");
+    if (!box) return;
+    const el = box.closest(tab === "history" ? "li.take" : ".vcard");
+    if (!el) return;
+    this.sel[tab].toggle(el.dataset.id, box.checked, this.shownIds(tab), e.shiftKey);
+    this.syncSelection(tab);
+  }
+
+  selectAll(tab, on) {
+    const sel = this.sel[tab];
+    if (on) for (const id of this.shownIds(tab)) sel.add(id);
+    else sel.clear();
+    this.syncSelection(tab);
+  }
+
+  syncSelection(tab) {
+    if (!this._rendered) return;
+    const sel = this.sel[tab];
+    for (const [id, el] of tab === "history" ? this.rows : this.cards) {
+      const on = sel.has(id);
+      el.classList.toggle("selected", on);
+      el.querySelector("input.sel").checked = on;
+    }
+    const shown = this.shownIds(tab);
+    const picked = shown.filter((id) => sel.has(id)).length;
+    const all = this.$(tab === "history" ? "#h-all" : "#v-all");
+    all.checked = shown.length > 0 && picked === shown.length;
+    all.indeterminate = picked > 0 && picked < shown.length;
+    all.disabled = !shown.length;
+    const bar = this.$(tab === "history" ? "#h-selbar" : "#v-selbar");
+    bar.hidden = !sel.size;
+    const noun = tab === "history" ? "take" : "voice";
+    bar.querySelector(".n").textContent = `${sel.size} ${noun}${sel.size === 1 ? "" : "s"} selected`;
+    bar.querySelector(".del span").textContent = `Delete ${sel.size}`;
+  }
+
+  async onSelbar(e, tab) {
+    const b = e.target.closest("button[data-sel]");
+    if (!b) return;
+    if (b.dataset.sel === "clear") {
+      this.sel[tab].clear();
+      this.syncSelection(tab);
+      return;
+    }
+    const ids = [...this.sel[tab]];
+    if (!ids.length) return;
+    const n = ids.length;
+    const ok = tab === "history"
+      ? await this.confirm(`Delete ${n} take${n === 1 ? "" : "s"}?`, `Their WAV, MP3 and recipe files will be removed from disk. This can't be undone.`, `Delete ${n}`)
+      : await this.confirm(`Delete ${n} voice${n === 1 ? "" : "s"}?`, "Their reference audio and transcripts will be removed from disk. Takes made with them are kept. This can't be undone.", `Delete ${n}`);
+    if (!ok) return;
+    b.disabled = true;
+    const failed = [];
+    for (const id of ids) {
+      try {
+        await (tab === "history" ? api.deleteTake(id) : api.deleteVoice(id));
+        this.sel[tab].delete(id);
+        if (tab === "history") {
+          this.takes = this.takes.filter((t) => t.id !== id);
+        } else {
+          this.itemEl(tab, id)?.remove();
+        }
+      } catch (err) {
+        failed.push(err.message);
+      }
+    }
+    b.disabled = false;
+    if (tab === "history") this.renderTakes();
+    else store.refreshVoices().catch(() => {});
+    this.syncSelection(tab);
+    const done = n - failed.length;
+    if (done) toast(`Deleted ${done} ${tab === "history" ? "take" : "voice"}${done === 1 ? "" : "s"}`, "ok");
+    if (failed.length) toast(`Couldn't delete ${failed.length}: ${failed[0]}`, "error");
   }
 
   // ----- confirm dialog -----
