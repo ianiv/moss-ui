@@ -691,8 +691,9 @@ class Worker:
                 log(f"mp3 failed: {e}")
         dur = take.duration_s
         rtf = take.wall_s / dur if dur else None
-        if rtf:
-            self.rtf[job.model] = round(0.7 * self.rtf[job.model] + 0.3 * rtf, 3)
+        if rtf:  # running estimate for ETAs; clamp outliers (e.g. a run slowed down by memory pressure)
+            cur = self.rtf[job.model]
+            self.rtf[job.model] = round(0.7 * cur + 0.3 * min(max(rtf, cur / 3), cur * 3), 3)
         safe_kw = {k: v for k, v in kw.items() if k not in ("prompt_audio_codes", "ref_audio")}
         rec = dict(
             workflow=job.workflow, model=job.model, model_repo=core.MODELS[job.model], job_id=job.id,
