@@ -46,6 +46,9 @@ def main():
     p.add_argument("--temperature", type=float)
     p.add_argument("--lines", action="store_true", help="one job per line of text")
     p.add_argument("--pack", action="store_true", help="sfx: 'seconds | prompt' lines")
+    p.add_argument("--steps", type=int, help="sfx2: denoising steps (default 100)")
+    p.add_argument("--cfg", type=float, help="sfx2: classifier-free guidance scale (default 4.0)")
+    p.add_argument("--shift", type=float, help="sfx2: flow-match sigma shift (default 5.0)")
     p.add_argument("-n", type=int, default=1, help="variations")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--stream", action="store_true", help="fast only: stream (reports first-audio latency)")
@@ -71,6 +74,9 @@ def main():
     params = dict(text=a.text, prompt=a.text, script=a.text, mode=a.mode, language=a.language,
                   instruction=a.instruction, seconds=a.seconds, max_seconds=a.max_seconds,
                   temperature=a.temperature, lines=a.lines, pack=a.pack)
+    v2 = {k: v for k, v in (("steps", a.steps), ("cfg_scale", a.cfg), ("shift", a.shift)) if v is not None}
+    if v2:
+        params["sampling"] = v2
     if a.workflow == "dialogue":
         params["voices"] = a.voice or []
     else:

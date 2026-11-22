@@ -18,7 +18,7 @@ class Store extends EventTarget {
     super();
     this.models = []; // [{key, repo, label, short, sample_rate, streaming, cloning, needs_voice, continuation, instruction, peak_gb, rtf, workflows}]
     this.workflows = {}; // workflow -> [model keys]
-    this.info = {}; // {frames_per_second, default_max_seconds, sfx_sampling}
+    this.info = {}; // {frames_per_second, default_max_seconds, sfx_sampling, sfx2_sampling}
     this.status = {}; // {key, state, since, load_s, warm_s, error, busy, task, pending, rtf, idle_unload_minutes}
     this.jobs = []; // newest first
     this.voices = [];
@@ -51,7 +51,7 @@ class Store extends EventTarget {
     const [m, voices, settings, jobs] = await Promise.all([api.models(), api.voices(), api.settings(), api.jobs()]);
     this.models = m.models;
     this.workflows = m.workflows;
-    this.info = { frames_per_second: m.frames_per_second, default_max_seconds: m.default_max_seconds, sfx_sampling: m.sfx_sampling };
+    this.info = { frames_per_second: m.frames_per_second, default_max_seconds: m.default_max_seconds, sfx_sampling: m.sfx_sampling, sfx2_sampling: m.sfx2_sampling };
     this.status = m.status;
     this.voices = voices;
     this.settings = settings;

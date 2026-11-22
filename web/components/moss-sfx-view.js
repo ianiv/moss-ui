@@ -1,11 +1,11 @@
-// <moss-sfx-view>: route #/sfx. Sound effects with MOSS-SoundEffect.
+// <moss-sfx-view>: route #/sfx. Sound effects with MOSS-SoundEffect v2.0 (sfx2, default) or v1 (sfx).
 //
-// Modes (segmented): Single = one description + length (0.5–60 s, quick chips 2/5/8/15);
+// Modes (segmented): Single = one description + length (0.5–30 s for v2, 0.5–60 s for v1; chips 2/5/8/15);
 // Pack = "seconds | prompt" lines (# comments and blank lines skipped; lines without a length use the
 // default length) with a live parsed preview: count, total seconds, invalid lines flagged (Generate is
 // blocked until they're fixed). Sampling: the model-card preset is on by default; unchecking reveals
-// temperature / top_p / top_k / repetition_penalty prefilled with the preset.
-// Request: {workflow: "sfx", model: "sfx", params: {prompt, seconds, pack, sampling?}, variations, seed}.
+// steps / cfg_scale / shift (v2) or temperature / top_p / top_k / repetition_penalty (v1), prefilled.
+// Request: {workflow: "sfx", model: "sfx2"|"sfx", params: {prompt, seconds, pack, sampling?}, variations, seed}.
 //
 // View contract (called by <moss-app>): activated(), generate(), loadRecipe(request), showJob(job).
 // Also follows store "show-job" and "recipe" events, handles take-list `regenerate` {take}, keeps a draft
@@ -21,9 +21,11 @@ import "./moss-take-list.js";
 const WORKFLOW = "sfx";
 const DRAFT_KEY = `moss-draft:${WORKFLOW}`;
 const MIN_S = 0.5;
-const MAX_S = 60;
+const MAX_BY_MODEL = { sfx2: 30, sfx: 60 };
+const DEFAULT_MODEL = "sfx2";
 const DEFAULT_S = 8;
 const PRESET_FALLBACK = { audio_temperature: 1.5, audio_top_p: 0.6, audio_top_k: 50, audio_repetition_penalty: 1.2 };
+const PRESET2_FALLBACK = { steps: 100, cfg_scale: 4.0, shift: 5.0 };
 const EXAMPLE_PACK = `10 | Steady rain pattering on a window, distant soft thunder.
 10 | Busy coffee shop ambience, cups clinking, espresso machine hissing, murmured chatter.
 10 | A crackling campfire at night with crickets in the background.
@@ -64,7 +66,8 @@ const styles = css`
  * "number | prompt" is flagged instead of being sent whole as a prompt.
  * -> {items: [{line, seconds, prompt, error}], valid, invalid, total}
  */
-export function parsePack(text, defaultSeconds) {
+export function parsePack(text, defaultSeconds, maxSeconds = 60) {
+  const MAX_S = maxSeconds;
   const items = [];
   String(text ?? "").split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
@@ -93,10 +96,12 @@ class MossSfxView extends MossElement {
 
   render() {
     const preset = this.preset();
+    const p2 = this.preset2();
+    const MAX_S = MAX_BY_MODEL[DEFAULT_MODEL];
     this.setHTML(html`
       <div class="view-head">
         <h2>Sound effects</h2>
-        <p>Describe a sound (English or Chinese) and pick its length; every run is bounded to ${MIN_S}–${MAX_S} s.
+        <p>Describe a sound (English or Chinese) and pick its length (up to 30 s with v2.0, 60 s with v1).
           Pack mode renders a list of sounds in one batch.</p>
       </div>
       <div class="layout">
@@ -141,7 +146,12 @@ class MossSfxView extends MossElement {
           <fieldset class="stack tight">
             <legend>Sampling</legend>
             <label class="check"><input type="checkbox" id="preset" checked>
-              Model-card preset (temp ${preset.audio_temperature}, top-p ${preset.audio_top_p}, top-k ${preset.audio_top_k}, repetition ${preset.audio_repetition_penalty})</label>
+              <span id="preset-text">Model-card preset</span></label>
+            <div class="custom" id="custom2" hidden>
+              <div class="field"><label for="s-steps">Steps</label><input id="s-steps" type="number" step="1" min="1" max="500" value="${p2.steps}"></div>
+              <div class="field"><label for="s-cfg">Guidance (CFG)</label><input id="s-cfg" type="number" step="0.5" min="1" value="${p2.cfg_scale}"></div>
+              <div class="field"><label for="s-shift">Sigma shift</label><input id="s-shift" type="number" step="0.5" min="0.1" value="${p2.shift}"></div>
+            </div>
             <div class="custom" id="custom" hidden>
               <div class="field"><label for="s-temp">Temperature</label><input id="s-temp" type="number" step="0.05" min="0" value="${preset.audio_temperature}"></div>
               <div class="field"><label for="s-topp">Top-p</label><input id="s-topp" type="number" step="0.05" min="0" max="1" value="${preset.audio_top_p}"></div>
@@ -150,7 +160,7 @@ class MossSfxView extends MossElement {
             </div>
           </fieldset>
 
-          <moss-gen-controls id="controls" name="controls" workflow="${WORKFLOW}" hide-model></moss-gen-controls>
+          <moss-gen-controls id="controls" name="controls" workflow="${WORKFLOW}"></moss-gen-controls>
 
           <div class="stack tight">
             <div class="actions">
@@ -180,7 +190,7 @@ class MossSfxView extends MossElement {
     });
     form.addEventListener("change", (e) => {
       if (e.target.name === "mode") this.setMode(e.target.value);
-      if (e.target.id === "preset") this.$("#custom").hidden = e.target.checked;
+      if (e.target.id === "preset") this.syncSampling();
     });
     form.addEventListener("click", (e) => {
       const chip = e.target.closest("button[data-secs]");
@@ -200,8 +210,10 @@ class MossSfxView extends MossElement {
       this.saveDraft();
     });
     this.takeList.addEventListener("regenerate", (e) => this.regenerate(e.detail?.take));
+    this.controls.addEventListener("model-change", () => this.onModelChange());
 
     this.restoreDraft();
+    this.onModelChange();
     this.setMode(this.mode);
     this.loadRecent();
   }
@@ -219,7 +231,7 @@ class MossSfxView extends MossElement {
 
   activated() {
     this.takePendingRecipe();
-    store.warmIfIdle(this.controls.model || WORKFLOW);
+    store.warmIfIdle(this.model);
   }
 
   showJob(job) {
@@ -237,8 +249,11 @@ class MossSfxView extends MossElement {
     this.$("#seconds").value = p.seconds ?? DEFAULT_S;
     const s = p.sampling && typeof p.sampling === "object" ? p.sampling : null;
     this.$("#preset").checked = !s;
-    this.$("#custom").hidden = !s;
     const preset = this.preset();
+    const p2 = this.preset2();
+    this.$("#s-steps").value = s?.steps ?? p2.steps;
+    this.$("#s-cfg").value = s?.cfg_scale ?? p2.cfg_scale;
+    this.$("#s-shift").value = s?.shift ?? p2.shift;
     this.$("#s-temp").value = s?.temperature ?? preset.audio_temperature;
     this.$("#s-topp").value = s?.top_p ?? preset.audio_top_p;
     this.$("#s-topk").value = s?.top_k ?? preset.audio_top_k;
@@ -247,6 +262,7 @@ class MossSfxView extends MossElement {
     if (request.model) v.model = request.model;
     if (request.variations) v.variations = request.variations;
     this.controls.setValues(v);
+    this.onModelChange();
     if (request.seed !== undefined && request.seed !== null) this.controls.useSeed(request.seed);
     this.clearError();
     this.updatePreview();
@@ -261,7 +277,7 @@ class MossSfxView extends MossElement {
     const c = this.controls.values;
     const req = {
       workflow: WORKFLOW,
-      model: c.model || WORKFLOW,
+      model: this.model,
       params: built.params,
       variations: c.variations || 1,
       seed: c.seed ?? null,
@@ -281,6 +297,33 @@ class MossSfxView extends MossElement {
 
   // ---------- internals ----------
 
+  get model() {
+    return this.controls?.model || DEFAULT_MODEL;
+  }
+
+  get maxSeconds() {
+    return MAX_BY_MODEL[this.model] ?? 60;
+  }
+
+  get isV2() {
+    return this.model === "sfx2";
+  }
+
+  onModelChange() {
+    const max = this.maxSeconds;
+    const secs = this.$("#seconds");
+    if (secs) secs.max = String(max);
+    this.setMode(this.mode);
+    this.applyPresetText();
+    this.syncSampling();
+  }
+
+  syncSampling() {
+    const custom = !this.$("#preset").checked;
+    this.$("#custom2").hidden = !(custom && this.isV2);
+    this.$("#custom").hidden = !(custom && !this.isV2);
+  }
+
   get mode() {
     return this.$("input[name=mode]:checked")?.value || "single";
   }
@@ -292,6 +335,7 @@ class MossSfxView extends MossElement {
     this.$("#single").hidden = pack;
     this.$("#pack").hidden = !pack;
     this.$("#seconds-label").textContent = pack ? "Default length (seconds)" : "Length (seconds)";
+    const MAX_S = this.maxSeconds;
     this.$("#seconds-hint").textContent = pack
       ? `Used for lines without "seconds |". ${MIN_S}–${MAX_S} s.`
       : `${MIN_S}–${MAX_S} s.`;
@@ -311,13 +355,23 @@ class MossSfxView extends MossElement {
     return { ...PRESET_FALLBACK, ...(store.info?.sfx_sampling || {}) };
   }
 
+  preset2() {
+    return { ...PRESET2_FALLBACK, ...(store.info?.sfx2_sampling || {}) };
+  }
+
   applyPresetText() {
     const p = this.preset();
-    const label = this.$("#preset")?.parentElement;
-    if (label?.lastChild) {
-      label.lastChild.textContent = ` Model-card preset (temp ${p.audio_temperature}, top-p ${p.audio_top_p}, top-k ${p.audio_top_k}, repetition ${p.audio_repetition_penalty})`;
+    const p2 = this.preset2();
+    const label = this.$("#preset-text");
+    if (label) {
+      label.textContent = this.isV2
+        ? `Model-card preset (${p2.steps} steps, CFG ${p2.cfg_scale}, shift ${p2.shift})`
+        : `Model-card preset (temp ${p.audio_temperature}, top-p ${p.audio_top_p}, top-k ${p.audio_top_k}, repetition ${p.audio_repetition_penalty})`;
     }
     if (this.$("#preset")?.checked) {
+      this.$("#s-steps").value = p2.steps;
+      this.$("#s-cfg").value = p2.cfg_scale;
+      this.$("#s-shift").value = p2.shift;
       this.$("#s-temp").value = p.audio_temperature;
       this.$("#s-topp").value = p.audio_top_p;
       this.$("#s-topk").value = p.audio_top_k;
@@ -334,7 +388,7 @@ class MossSfxView extends MossElement {
     const box = this.$("#preview");
     if (!box || this.mode !== "pack") return;
     const def = this.seconds();
-    const r = parsePack(this.$("#pack-text").value, def);
+    const r = parsePack(this.$("#pack-text").value, def, this.maxSeconds);
     if (!r.items.length) {
       box.innerHTML = String(html`<div class="none">Add lines like <code>5 | A door slams</code>, or load the example.</div>`);
       return;
@@ -360,13 +414,14 @@ class MossSfxView extends MossElement {
   buildParams() {
     const seconds = this.seconds();
     const pack = this.mode === "pack";
+    const MAX_S = this.maxSeconds;
     if (!(seconds >= MIN_S && seconds <= MAX_S)) {
       return { error: `${pack ? "Default length" : "Length"} must be between ${MIN_S} and ${MAX_S} seconds.` };
     }
     let prompt;
     if (pack) {
       prompt = this.$("#pack-text").value;
-      const r = parsePack(prompt, seconds);
+      const r = parsePack(prompt, seconds, MAX_S);
       if (!r.items.length) return { error: 'Add at least one "seconds | description" line.' };
       const bad = r.items.find((x) => x.error);
       if (bad) return { error: `Line ${bad.line}: ${bad.error}` };
@@ -375,11 +430,22 @@ class MossSfxView extends MossElement {
       if (!prompt) return { error: "Describe the sound." };
     }
     const params = { prompt, seconds, pack };
-    if (!this.$("#preset").checked) {
-      const num = (id) => {
-        const v = this.$(id).value.trim();
-        return v === "" ? null : parseFloat(v);
-      };
+    const num = (id) => {
+      const v = this.$(id).value.trim();
+      return v === "" ? null : parseFloat(v);
+    };
+    if (!this.$("#preset").checked && this.isV2) {
+      const s = { steps: num("#s-steps"), cfg_scale: num("#s-cfg"), shift: num("#s-shift") };
+      for (const [k, v] of Object.entries(s)) {
+        if (v === null) delete s[k];
+        else if (!Number.isFinite(v) || v <= 0) return { error: `${k.replace("_", " ")} must be a positive number.` };
+      }
+      if (s.steps !== undefined) {
+        s.steps = Math.round(s.steps);
+        if (s.steps < 1 || s.steps > 500) return { error: "Steps must be between 1 and 500." };
+      }
+      params.sampling = s;
+    } else if (!this.$("#preset").checked) {
       const s = {
         temperature: num("#s-temp"),
         top_p: num("#s-topp"),

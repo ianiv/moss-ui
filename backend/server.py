@@ -969,7 +969,7 @@ def api_models(h: Handler):
     models = [dict(key=k, repo=core.MODELS[k], **info) for k, info in core.MODEL_INFO.items()]
     h.send_json(dict(models=models, status=WORKER.snapshot(), workflows=core.WORKFLOW_MODELS,
                      frames_per_second=core.FRAMES_PER_SECOND, default_max_seconds=core.DEFAULT_MAX_SECONDS,
-                     sfx_sampling=core.SFX_SAMPLING))
+                     sfx_sampling=core.SFX_SAMPLING, sfx2_sampling=core.SFX2_SAMPLING))
 
 
 @route("POST", r"/api/models/([a-z]+)/warm")

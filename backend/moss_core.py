@@ -23,11 +23,15 @@ MODELS = {
     "fast": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
     "nano": "mlx-community/MOSS-TTS-Nano-100M",
     "dialogue": "OpenMOSS-Team/MOSS-TTSD-v1.0",
+    "sfx2": "OpenMOSS-Team/MOSS-SoundEffect-v2.0",
     "sfx": "OpenMOSS-Team/MOSS-SoundEffect",
     "voicegen": "OpenMOSS-Team/MOSS-VoiceGenerator",
 }
 # Model-card recommended decoding for MOSS-SoundEffect.
 SFX_SAMPLING = dict(audio_temperature=1.5, audio_top_p=0.6, audio_top_k=50, audio_repetition_penalty=1.2)
+# Model-card defaults for MOSS-SoundEffect v2.0 (flow-matching DiT; sfx_v2.py).
+SFX2_SAMPLING = dict(steps=100, cfg_scale=4.0, shift=5.0)
+SFX2_MAX_SECONDS = 30
 # Model-card recommended decoding for MOSS-VoiceGenerator.
 VOICEGEN_SAMPLING = dict(audio_temperature=1.5, audio_top_p=0.6, audio_top_k=50, audio_repetition_penalty=1.1)
 
@@ -45,7 +49,11 @@ MODEL_INFO = {
     "dialogue": dict(label="MOSS-TTSD v1.0", short="Multi-speaker dialogue", sample_rate=24000, peak_gb=25.5,
                      rtf=0.85, streaming=False, cloning=True, needs_voice=False, continuation=False,
                      instruction=False, workflows=["dialogue"]),
-    "sfx": dict(label="MOSS-SoundEffect", short="Sound effects and ambience", sample_rate=24000, peak_gb=25.0,
+    # Flow-matching DiT + DAC VAE + Qwen3 encoder, ported to MLX in sfx_v2.py. Always denoises a 30 s latent.
+    "sfx2": dict(label="MOSS-SoundEffect v2.0 (1.3B DiT)", short="Sound effects, 48 kHz, up to 30 s",
+                 sample_rate=48000, peak_gb=13.0, rtf=3.0, streaming=False, cloning=False, needs_voice=False,
+                 continuation=False, instruction=False, workflows=["sfx"]),
+    "sfx": dict(label="MOSS-SoundEffect v1", short="Sound effects and ambience", sample_rate=24000, peak_gb=25.0,
                 rtf=0.5, streaming=False, cloning=False, needs_voice=False, continuation=False, instruction=False,
                 workflows=["sfx"]),
     # Same MossTTSDelay architecture on a 1.7B backbone, trained to build a voice from a description.
@@ -60,10 +68,11 @@ WORKFLOW_MODELS = {
     "design": ["voicegen", "tts"],
     "clone": ["tts", "fast", "nano"],
     "dialogue": ["dialogue"],
-    "sfx": ["sfx"],
+    "sfx": ["sfx2", "sfx"],
 }
 
-DEFAULT_MAX_SECONDS = {"tts": 120, "fast": 120, "nano": 30, "dialogue": 600, "sfx": 60, "voicegen": 60}
+DEFAULT_MAX_SECONDS = {"tts": 120, "fast": 120, "nano": 30, "dialogue": 600, "sfx": 60, "sfx2": SFX2_MAX_SECONDS,
+                      "voicegen": 60}
 
 # Tiny throwaway generations that compile kernels and initialize the audio tokenizer.
 WARMUP_TEXT = "Hello there."
@@ -230,8 +239,12 @@ def dialogue_items(params: dict, voices: list[Voice | None]) -> list[Item]:
     return [Item(label=label, kwargs=kw, voices=picked, seconds_hint=estimate_seconds(script))]
 
 
-def sfx_items(params: dict) -> list[Item]:
-    """Mirrors run_sfx. `pack` text uses 'seconds | prompt' lines; seconds always bounded."""
+def sfx_items(params: dict, model_key: str = "sfx") -> list[Item]:
+    """Mirrors run_sfx. `pack` text uses 'seconds | prompt' lines; seconds always bounded.
+
+    v1 (sfx) takes token counts and sampling; v2 (sfx2) takes seconds, steps, cfg_scale and shift."""
+    v2 = model_key == "sfx2"
+    max_s = SFX2_MAX_SECONDS if v2 else 60
     default_seconds = _float(params, "seconds", 8.0)
     if params.get("pack"):
         lines = text_lines(params.get("prompt") or params.get("text") or "")
@@ -246,8 +259,19 @@ def sfx_items(params: dict) -> list[Item]:
         seconds, prompt = default_seconds, line
         if m := re.match(r"^\s*(\d+(?:\.\d+)?)\s*\|\s*(.+)$", line):
             seconds, prompt = float(m.group(1)), m.group(2).strip()
-        if not 0.5 <= seconds <= 60:
-            raise RequestError("sound length must be between 0.5 and 60 seconds")
+        if not 0.5 <= seconds <= max_s:
+            raise RequestError(f"sound length must be between 0.5 and {max_s} seconds")
+        if v2:
+            kw = dict(prompt=prompt, seconds=seconds, **SFX2_SAMPLING)
+            for src, dst, cast in (("steps", "steps", int), ("cfg_scale", "cfg_scale", float),
+                                   ("shift", "shift", float)):
+                v = _float(custom or {}, src)
+                if v is not None:
+                    kw[dst] = cast(v)
+            if not 1 <= kw["steps"] <= 500:
+                raise RequestError("steps must be between 1 and 500")
+            items.append(Item(label=prompt, kwargs=kw, seconds_hint=seconds))
+            continue
         tokens = round(seconds * FRAMES_PER_SECOND)
         kw = dict(text=None, ambient_sound=prompt, tokens=tokens, max_tokens=tokens + 50, **SFX_SAMPLING)
         if custom:
@@ -273,7 +297,7 @@ def build_items(workflow: str, model_key: str, params: dict, resolve_voice: Call
         ids = params.get("voices") or []
         return dialogue_items(params, [resolve_voice(v) if v else None for v in ids])
     if workflow == "sfx":
-        return sfx_items(params)
+        return sfx_items(params, model_key)
     if workflow == "design":
         if not _str(params, "instruction"):
             raise RequestError("describe the voice (instruction)")
@@ -286,6 +310,8 @@ def build_items(workflow: str, model_key: str, params: dict, resolve_voice: Call
 
 def warmup_kwargs(model_key: str, ref_audio: str | None = None) -> dict:
     """A few words with a tiny max_tokens; output is thrown away."""
+    if model_key == "sfx2":  # 2 steps over the full 30 s latent: compiles the DiT and VAE kernels
+        return dict(prompt="A single soft click.", seconds=1.0, steps=2, cfg_scale=SFX2_SAMPLING["cfg_scale"])
     if model_key == "sfx":
         return dict(text=None, ambient_sound="A single soft click.", tokens=12, max_tokens=WARMUP_MAX_TOKENS,
                     **SFX_SAMPLING)
@@ -305,6 +331,10 @@ def warmup_kwargs(model_key: str, ref_audio: str | None = None) -> dict:
 # ---------- models and generation ----------
 
 def load_model(model_key: str, override: str | None = None):
+    if model_key == "sfx2":
+        import sfx_v2
+
+        return sfx_v2.load(override or MODELS[model_key])
     from mlx_audio.tts import load
 
     return load(override or MODELS[model_key], lazy=True)
@@ -355,6 +385,8 @@ def render(model, kwargs: dict, *, seed: int | None = None, stream: bool = False
     t0 = time.perf_counter()
     first = None
     chunks, sr, total = [], None, 0
+    if getattr(model, "step_callbacks", False):  # diffusion models: cancel between denoising steps
+        kwargs = dict(kwargs, should_cancel=should_cancel)
     for r in model.generate(stream=stream, **kwargs):
         if first is None:
             first = time.perf_counter() - t0

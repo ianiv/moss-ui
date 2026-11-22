@@ -28,6 +28,10 @@ without work (default 15, `0` = never).
 - `backend/server.py`: HTTP API, job queue, model manager. `backend/moss_core.py`: the app's own copy of the
   `../moss` CLI logic. `backend/cli.py`: command line without the browser, e.g.
   `…/mlx-audio/bin/python backend/cli.py clone "Hi there" --model nano --voice my-voice`.
+- `backend/sfx_v2.py`: MLX port of MOSS-SoundEffect v2.0 (flow-matching DiT + DAC VAE + Qwen3 text encoder;
+  48 kHz, up to 30 s), the default sound-effects model (`sfx2`; v1 stays available as `sfx`). mlx-audio doesn't
+  ship it. About 30 s per sound at the default 100 steps regardless of length, ~13 GB peak. Standalone:
+  `…/mlx-audio/bin/python backend/sfx_v2.py "rain on a tin roof" --seconds 8 -o rain.wav`.
 - `web/`: `index.html`, `app.js`, `lib/` (styles, store, api, audio helpers), `components/` (one custom element
   per file), `worklets/pcm-player.js` (live playback for the streaming `fast` model).
 

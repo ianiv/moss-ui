@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts the MOSS UI server with the Python from the mlx-audio uv tool (where mlx_audio is installed).
-# Usage: ./moss-ui [--port 8765] [--data-dir ./data] [--warm-model tts|fast|nano|dialogue|sfx|none]
+# Usage: ./moss-ui [--port 8765] [--data-dir ./data] [--warm-model tts|fast|nano|dialogue|sfx2|sfx|none]
 #                  [--idle-unload-minutes 15]
 # Always binds to 127.0.0.1. Open http://127.0.0.1:<port>/ in a browser.
 set -euo pipefail
